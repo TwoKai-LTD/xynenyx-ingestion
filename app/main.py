@@ -54,11 +54,22 @@ def main():
         "--mode",
         type=str,
         choices=["ingestion", "processing", "features"],
-        default=settings.worker_mode,
+        default=None,  # Will use env var or settings default
         help="Worker mode to run",
     )
 
     args = parser.parse_args()
+
+    # Determine mode: CLI arg > env var > settings default
+    mode = args.mode
+    if not mode:
+        # Check environment variable (Railway sets this)
+        import os
+        mode = os.getenv("WORKER_MODE") or settings.worker_mode
+
+    if mode not in ["ingestion", "processing", "features"]:
+        logger.error(f"Invalid worker mode: {mode}. Must be one of: ingestion, processing, features")
+        sys.exit(1)
 
     # Validate configuration
     if not settings.supabase_url or not settings.supabase_service_key:
@@ -66,7 +77,7 @@ def main():
         sys.exit(1)
 
     # Run worker
-    asyncio.run(run_worker(args.mode))
+    asyncio.run(run_worker(mode))
 
 
 if __name__ == "__main__":
