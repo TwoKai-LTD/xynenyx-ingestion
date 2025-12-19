@@ -1,0 +1,12 @@
+fastapi>=0.109.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+supabase>=2.3.0
+httpx>=0.26.0
+feedparser>=6.0.10
+beautifulsoup4>=4.12.3
+llama-index>=0.10.0
+llama-index-vector-stores-supabase>=0.1.0
+dateparser>=1.2.0
+python-dotenv>=1.0.0
+

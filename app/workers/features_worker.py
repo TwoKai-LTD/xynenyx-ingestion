@@ -1,0 +1,201 @@
+"""Features worker - extract and store structured features."""
+import logging
+import time
+from typing import List, Dict, Any, Optional
+from uuid import UUID
+from app.shared.clients import SupabaseClient
+from app.shared.extractors import MetadataExtractor, normalize_name
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+class FeaturesWorker:
+    """Worker for extracting and storing features."""
+
+    def __init__(self):
+        """Initialize features worker."""
+        self.supabase_client = SupabaseClient()
+        self.extractor = MetadataExtractor()
+        self.batch_size = settings.batch_size
+
+    async def run(self) -> Dict[str, Any]:
+        """
+        Run features worker.
+
+        Returns:
+            Dictionary with feature extraction results
+        """
+        start_time = time.time()
+        logger.info("Starting features worker...")
+
+        # Get documents ready for feature extraction
+        documents = self.supabase_client.list_documents_ready_for_features(limit=self.batch_size)
+        logger.info(f"Found {len(documents)} documents for feature extraction")
+
+        if not documents:
+            logger.info("No documents for feature extraction")
+            return {
+                "status": "completed",
+                "documents_processed": 0,
+                "companies_created": 0,
+                "investors_created": 0,
+                "funding_rounds_created": 0,
+                "errors": 0,
+                "duration_seconds": time.time() - start_time,
+            }
+
+        documents_processed = 0
+        companies_created = 0
+        investors_created = 0
+        funding_rounds_created = 0
+        errors = 0
+
+        for doc in documents:
+            try:
+                result = await self._extract_features(doc)
+                documents_processed += 1
+                companies_created += result.get("companies_created", 0)
+                investors_created += result.get("investors_created", 0)
+                funding_rounds_created += result.get("funding_rounds_created", 0)
+            except Exception as e:
+                errors += 1
+                logger.error(f"Error extracting features for document {doc['id']}: {e}", exc_info=True)
+
+        duration = time.time() - start_time
+        logger.info(
+            f"Feature extraction complete: {documents_processed} documents, "
+            f"{companies_created} companies, {investors_created} investors, "
+            f"{funding_rounds_created} funding rounds, {errors} errors, "
+            f"duration: {duration:.2f}s"
+        )
+
+        return {
+            "status": "completed",
+            "documents_processed": documents_processed,
+            "companies_created": companies_created,
+            "investors_created": investors_created,
+            "funding_rounds_created": funding_rounds_created,
+            "errors": errors,
+            "duration_seconds": duration,
+        }
+
+    async def _extract_features(self, document: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract and store features for a document."""
+        document_id = UUID(document["id"])
+        metadata = document.get("metadata", {})
+        raw_content = metadata.get("raw_content", "")
+
+        if not raw_content:
+            logger.warning(f"No raw_content for document {document_id}, skipping")
+            self.supabase_client.mark_features_extracted(document_id)
+            return {}
+
+        logger.debug(f"Extracting features for document: {document_id}")
+
+        # Extract metadata
+        extracted_metadata = self.extractor.extract(raw_content, metadata)
+
+        # Normalize and store companies
+        company_ids = []
+        companies = extracted_metadata.get("companies", [])
+        for company_name in companies:
+            try:
+                normalized = normalize_name(company_name)
+                company = self.supabase_client.create_company(company_name, normalized)
+                company_ids.append(UUID(company["id"]))
+            except Exception as e:
+                logger.warning(f"Error creating company {company_name}: {e}")
+
+        # Normalize and store investors
+        investor_ids = []
+        investors = extracted_metadata.get("investors", [])
+        seen_investors = set()
+        for investor_data in investors:
+            investor_name = investor_data.get("name", "")
+            if not investor_name or investor_name in seen_investors:
+                continue
+            seen_investors.add(investor_name)
+            try:
+                normalized = normalize_name(investor_name)
+                investor = self.supabase_client.create_investor(investor_name, normalized)
+                if investor and investor.get("id"):
+                    investor_ids.append(UUID(investor["id"]))
+            except Exception as e:
+                logger.warning(f"Error creating investor {investor_name}: {e}", exc_info=True)
+
+        # Create funding rounds
+        funding_round_ids = []
+        funding_amounts = extracted_metadata.get("funding_amounts", [])
+        for funding_data in funding_amounts:
+            try:
+                amount_millions = funding_data.get("amount_millions", 0)
+                currency = funding_data.get("currency", "USD")
+                round_type = funding_data.get("round")
+
+                # Convert to USD (simplified - in production, use real exchange rates)
+                amount_usd = amount_millions
+                if currency == "EUR":
+                    amount_usd = amount_millions * 1.1
+                elif currency == "GBP":
+                    amount_usd = amount_millions * 1.25
+
+                # Get first company if available
+                company_id = company_ids[0] if company_ids else None
+
+                # Get lead investor if available
+                lead_investor_id = None
+                for inv_data in investors:
+                    if inv_data.get("role") == "lead" and investor_ids:
+                        lead_investor_id = investor_ids[0]
+                        break
+
+                funding_round = self.supabase_client.create_funding_round(
+                    document_id=document_id,
+                    company_id=company_id,
+                    amount_usd=amount_usd,
+                    amount_original=amount_millions,
+                    currency=currency,
+                    round_type=round_type,
+                    round_date=None,  # Could extract from dates
+                    lead_investor_id=lead_investor_id,
+                    investor_ids=investor_ids if investor_ids else None,
+                    metadata=funding_data,
+                )
+                if funding_round and funding_round.get("id"):
+                    funding_round_ids.append(UUID(funding_round["id"]))
+            except Exception as e:
+                logger.warning(f"Error creating funding round: {e}", exc_info=True)
+
+        # Extract sectors
+        sectors = []
+        sector_data = extracted_metadata.get("sectors", [])
+        for sector_info in sector_data:
+            sectors.append(sector_info.get("sector", ""))
+
+        # Extract keywords (simple - could be enhanced)
+        keywords = []
+        # Could add keyword extraction logic here
+
+        # Create document features record
+        self.supabase_client.create_document_features(
+            document_id=document_id,
+            company_ids=company_ids if company_ids else None,
+            investor_ids=investor_ids if investor_ids else None,
+            funding_round_ids=funding_round_ids if funding_round_ids else None,
+            sectors=sectors if sectors else None,
+            keywords=keywords if keywords else None,
+            metadata=extracted_metadata,
+        )
+
+        # Mark document as having features extracted
+        self.supabase_client.mark_features_extracted(document_id)
+
+        logger.debug(f"Features extracted for document {document_id}")
+
+        return {
+            "companies_created": len(set(company_ids)),
+            "investors_created": len(set(investor_ids)),
+            "funding_rounds_created": len(funding_round_ids),
+        }
+

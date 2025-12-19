@@ -1,0 +1,47 @@
+[tool.poetry]
+name = "xynenyx-ingestion"
+version = "0.1.0"
+description = "Data ingestion service for Xynenyx - RSS feeds, processing, and feature extraction"
+authors = ["Edward Sims <edward@xynenyx.com>"]
+readme = "README.md"
+packages = [{include = "app"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.109.0"
+pydantic = "^2.5.0"
+pydantic-settings = "^2.1.0"
+supabase = "^2.3.0"
+httpx = "^0.26.0"
+feedparser = "^6.0.10"
+beautifulsoup4 = "^4.12.3"
+llama-index = "^0.10.0"
+llama-index-vector-stores-supabase = "^0.1.0"
+dateparser = "^1.2.0"
+python-dotenv = "^1.0.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.4"
+pytest-asyncio = "^0.23.3"
+pytest-cov = "^4.1.0"
+ruff = "^0.1.11"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+
