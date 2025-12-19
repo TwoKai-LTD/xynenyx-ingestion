@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import time
+import hashlib
 from typing import List, Dict, Any
 from datetime import datetime
 from uuid import UUID
@@ -167,10 +168,24 @@ class IngestionWorker:
             article_url = entry.get("link", "")
             article_title = entry.get("title", "Untitled")
 
-            # Check if document already exists (deduplication by URL)
-            # Note: This is a simple check - in production, might want to check s3_key or metadata
-            article_id = entry.get("id", article_url.split("/")[-1])
-            s3_key = f"rss://{feed_id}/{article_id}"
+            # Generate unique s3_key for deduplication
+            # Use article URL hash for better deduplication across feeds
+            import hashlib
+            url_hash = hashlib.md5(article_url.encode()).hexdigest()[:12]
+            article_id = entry.get("id", "")
+            if not article_id:
+                # Fallback: use URL slug or hash
+                article_id = article_url.split("/")[-1] or url_hash
+            
+            # s3_key format: rss://{feed_id}/{article_id_hash}
+            # This ensures same article from same feed is deduplicated
+            s3_key = f"rss://{feed_id}/{url_hash}"
+
+            # Check if document already exists (deduplication)
+            existing = self.supabase_client.get_document_by_s3_key(s3_key)
+            if existing:
+                logger.debug(f"Document already exists for article: {article_url} (s3_key: {s3_key})")
+                return False  # Skip, already processed
 
             # Fetch HTML content
             content = await self.html_parser.extract_content(article_url)
@@ -182,25 +197,32 @@ class IngestionWorker:
                     return False
 
             # Create document record with status='pending'
-            document = self.supabase_client.create_document(
-                user_id=user_id,
-                name=article_title,
-                s3_key=s3_key,
-                content_type="text/html",
-                metadata={
-                    "feed_name": feed_name,
-                    "feed_url": feed_url,
-                    "article_url": article_url,
-                    "published_date": entry.get("published_date"),
-                    "raw_content": content,  # Store raw content for processing
-                },
-            )
+            try:
+                document = self.supabase_client.create_document(
+                    user_id=user_id,
+                    name=article_title,
+                    s3_key=s3_key,
+                    content_type="text/html",
+                    metadata={
+                        "feed_name": feed_name,
+                        "feed_url": feed_url,
+                        "article_url": article_url,
+                        "article_id": article_id,
+                        "published_date": entry.get("published_date"),
+                        "raw_content": content,  # Store raw content for processing
+                    },
+                )
 
-            logger.debug(f"Created document: {document['id']} for article: {article_title}")
-
-            return True
+                logger.debug(f"Created document: {document['id']} for article: {article_title}")
+                return True
+            except Exception as e:
+                # Handle duplicate key error (race condition)
+                if "duplicate" in str(e).lower() or "unique" in str(e).lower() or "23505" in str(e):
+                    logger.debug(f"Document already exists (race condition): {article_url}")
+                    return False
+                raise
 
         except Exception as e:
-            logger.error(f"Error processing entry {entry.get('link', 'unknown')}: {e}")
+            logger.error(f"Error processing entry {entry.get('link', 'unknown')}: {e}", exc_info=True)
             return False
 

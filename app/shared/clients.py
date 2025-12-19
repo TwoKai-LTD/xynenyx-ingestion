@@ -64,6 +64,11 @@ class SupabaseClient:
         result = self.client.table("documents").select("*").eq("id", str(document_id)).execute()
         return result.data[0] if result.data else None
 
+    def get_document_by_s3_key(self, s3_key: str) -> Optional[dict]:
+        """Get a document by s3_key (for deduplication)."""
+        result = self.client.table("documents").select("*").eq("s3_key", s3_key).limit(1).execute()
+        return result.data[0] if result.data else None
+
     def list_documents_by_status(
         self,
         status: str,
