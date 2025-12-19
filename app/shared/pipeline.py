@@ -153,7 +153,9 @@ class Chunker:
         """Split a document into chunks."""
         from llama_index.core import Document
 
-        doc = Document(text=text, metadata=metadata)
+        # Remove raw_content from metadata before chunking (it's too large)
+        chunk_metadata = {k: v for k, v in metadata.items() if k != 'raw_content'}
+        doc = Document(text=text, metadata=chunk_metadata)
         nodes = self.splitter.get_nodes_from_documents([doc])
 
         chunks = []
