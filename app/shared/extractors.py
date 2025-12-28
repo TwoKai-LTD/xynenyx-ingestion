@@ -115,10 +115,20 @@ class MetadataExtractor:
                 if all(len(w) <= 3 for w in words):
                     continue
             # Must not start with common articles/prepositions
-            if c.split()[0].lower() in ["the", "a", "an", "in", "on", "at", "for", "with"]:
+            if c.split()[0].lower() in ["the", "a", "an", "in", "on", "at", "for", "with", "to", "that", "this", "these", "those"]:
                 continue
             # Must not be a date pattern
             if re.match(r"^\d{1,2}\s+[A-Z]", c):
+                continue
+            # Filter out common verb phrases (likely false positives)
+            verb_phrases = ["to fix", "to become", "to try", "to use", "to make", "to build", "to pursue", "to produce", "to search", "to lose", "to diversify"]
+            if any(c.lower().startswith(phrase) for phrase in verb_phrases):
+                continue
+            # Filter out phrases starting with common words
+            if c.split()[0].lower() in ["skipped", "with", "should", "continues", "said", "will", "is", "has", "had", "was", "were", "can", "could", "would"]:
+                continue
+            # Filter out very long phrases (4+ words are usually false positives)
+            if len(c.split()) > 3:
                 continue
             filtered.add(c)
 

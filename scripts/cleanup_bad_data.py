@@ -336,6 +336,16 @@ class DataCleanup:
             "said in",
             "will be searching",
             "reporter at techcrunch",
+            "to fix it",
+            "skipped that step",
+            "with little success",
+            "should pursue venture",
+            "that produces lithium",
+            "Locusview sold for",
+            "with some friends",
+            "Dazzle raises",
+            "Resolve AI hits",
+            "Koala\nfor",
         ]
         
         # Also check for very short names or names that are common words
@@ -359,6 +369,15 @@ class DataCleanup:
                     "id": company["id"],
                     "name": company["name"],
                     "reason": "Name too short"
+                })
+                continue
+            
+            # Check for names with 4+ words (usually false positives)
+            if len(name.split()) >= 4:
+                to_delete.append({
+                    "id": company["id"],
+                    "name": company["name"],
+                    "reason": "Too many words (4+)"
                 })
                 continue
             
