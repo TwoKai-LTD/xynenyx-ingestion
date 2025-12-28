@@ -369,8 +369,9 @@ class DataCleanup:
                 "battlefield", "insider", "paramount", "netflix", "openai", "elevenlabs",
             ]
             if name in common_words:
-                # Only delete if they have no funding rounds or very few
-                funding_count = len([fr for fr in funding_rounds if fr.get("company_id") == company["id"]])
+                # Check if company has funding rounds
+                fr_result = self.supabase_client.client.table("funding_rounds").select("id").eq("company_id", company["id"]).execute()
+                funding_count = len(fr_result.data) if fr_result.data else 0
                 if funding_count == 0:
                     to_delete.append({
                         "id": company["id"],
