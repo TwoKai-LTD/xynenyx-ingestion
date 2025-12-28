@@ -4,10 +4,11 @@ Cleanup script for bad funding data created before the fixes.
 
 This script:
 1. Fixes funding round amounts (multiplies by 1M if clearly in millions)
-2. Deletes funding rounds with clearly invalid amounts
-3. Deletes bad company names (false positives)
-4. Marks documents for re-processing
-5. Optionally re-runs feature extraction
+2. Fixes missing round_date by extracting from document metadata
+3. Deletes funding rounds with clearly invalid amounts
+4. Deletes bad company names (false positives)
+5. Marks documents for re-processing
+6. Optionally re-runs feature extraction
 """
 import asyncio
 import logging
@@ -39,13 +40,14 @@ class DataCleanup:
         self.features_worker = FeaturesWorker()
     
     async def run(self, dry_run: bool = True, fix_amounts: bool = True, 
-                  delete_bad_companies: bool = True, reprocess: bool = False):
+                  fix_dates: bool = True, delete_bad_companies: bool = True, reprocess: bool = False):
         """
         Run cleanup.
         
         Args:
             dry_run: If True, only show what would be done without making changes
             fix_amounts: Fix funding amounts by multiplying by 1M
+            fix_dates: Extract and set round_date from document metadata
             delete_bad_companies: Delete companies with bad names
             reprocess: Re-run feature extraction on affected documents
         """
@@ -55,16 +57,20 @@ class DataCleanup:
         if fix_amounts:
             await self._fix_funding_amounts(dry_run)
         
-        # Step 2: Delete bad companies
+        # Step 2: Fix missing round dates
+        if fix_dates:
+            await self._fix_round_dates(dry_run)
+        
+        # Step 3: Delete bad companies
         if delete_bad_companies:
             await self._delete_bad_companies(dry_run)
         
-        # Step 3: Mark documents for re-processing
+        # Step 4: Mark documents for re-processing
         if reprocess:
             await self._mark_for_reprocessing(dry_run)
             
             if not dry_run:
-                # Step 4: Re-run feature extraction
+                # Step 5: Re-run feature extraction
                 logger.info("Re-running feature extraction...")
                 result = await self.features_worker.run()
                 logger.info(f"Feature extraction complete: {result}")
@@ -161,6 +167,101 @@ class DataCleanup:
             
             logger.info(f"Fixed {len(to_fix)} funding rounds")
             logger.info(f"Deleted {len(to_delete)} funding rounds")
+    
+    async def _fix_round_dates(self, dry_run: bool):
+        """Fix missing round_date by extracting from document metadata."""
+        logger.info("Analyzing funding rounds for missing dates...")
+        
+        # Get funding rounds with NULL round_date
+        result = self.supabase_client.client.table("funding_rounds").select(
+            "id, document_id, round_date"
+        ).is_("round_date", "null").execute()
+        
+        funding_rounds = result.data if result.data else []
+        logger.info(f"Found {len(funding_rounds)} funding rounds with NULL round_date")
+        
+        if not funding_rounds:
+            logger.info("No funding rounds need date fixes")
+            return
+        
+        # Get document IDs
+        document_ids = list(set([fr["document_id"] for fr in funding_rounds]))
+        
+        # Get documents with metadata
+        docs_result = self.supabase_client.client.table("documents").select(
+            "id, metadata, created_at"
+        ).in_("id", document_ids).execute()
+        
+        documents = {doc["id"]: doc for doc in (docs_result.data if docs_result.data else [])}
+        
+        # Map funding rounds to documents
+        to_fix = []
+        fixed_ids = set()
+        
+        for fr in funding_rounds:
+            fr_id = fr["id"]
+            doc_id = fr["document_id"]
+            doc = documents.get(doc_id)
+            
+            if not doc:
+                continue
+            
+            metadata = doc.get("metadata", {})
+            published_date = metadata.get("published_date")
+            
+            # Try published_date first
+            if published_date:
+                try:
+                    import dateparser
+                    parsed = dateparser.parse(published_date)
+                    if parsed:
+                        round_date = parsed.date().isoformat()
+                        to_fix.append({
+                            "id": fr_id,
+                            "round_date": round_date,
+                            "source": "published_date"
+                        })
+                        fixed_ids.add(fr_id)
+                except Exception as e:
+                    logger.debug(f"Error parsing date {published_date}: {e}")
+            
+            # Fallback to document created_at if no published_date
+            if fr_id not in fixed_ids:
+                try:
+                    created_at = doc.get("created_at")
+                    if created_at:
+                        from datetime import datetime
+                        parsed = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                        round_date = parsed.date().isoformat()
+                        to_fix.append({
+                            "id": fr_id,
+                            "round_date": round_date,
+                            "source": "created_at"
+                        })
+                        fixed_ids.add(fr_id)
+                except Exception as e:
+                    logger.debug(f"Error parsing created_at: {e}")
+        
+        logger.info(f"Found {len(to_fix)} funding rounds that can have dates fixed")
+        
+        if dry_run:
+            logger.info("\n=== DRY RUN - Would fix dates for the following ===")
+            for fix in to_fix[:10]:  # Show first 10
+                logger.info(f"  ID: {fix['id']}, Date: {fix['round_date']} (from {fix['source']})")
+            if len(to_fix) > 10:
+                logger.info(f"  ... and {len(to_fix) - 10} more")
+        else:
+            # Fix dates
+            for fix in to_fix:
+                try:
+                    self.supabase_client.client.table("funding_rounds").update({
+                        "round_date": fix["round_date"]
+                    }).eq("id", fix["id"]).execute()
+                    logger.debug(f"Fixed date for funding round {fix['id']}: {fix['round_date']}")
+                except Exception as e:
+                    logger.error(f"Error fixing date for funding round {fix['id']}: {e}")
+            
+            logger.info(f"Fixed dates for {len(to_fix)} funding rounds")
     
     async def _delete_bad_companies(self, dry_run: bool):
         """Delete companies with bad names (false positives)."""
@@ -283,6 +384,8 @@ async def main():
                         help="Actually execute the cleanup (overrides --dry-run)")
     parser.add_argument("--no-fix-amounts", action="store_true",
                         help="Skip fixing funding amounts")
+    parser.add_argument("--no-fix-dates", action="store_true",
+                        help="Skip fixing missing round dates")
     parser.add_argument("--no-delete-companies", action="store_true",
                         help="Skip deleting bad companies")
     parser.add_argument("--reprocess", action="store_true",
@@ -296,6 +399,7 @@ async def main():
     await cleanup.run(
         dry_run=dry_run,
         fix_amounts=not args.no_fix_amounts,
+        fix_dates=not args.no_fix_dates,
         delete_bad_companies=not args.no_delete_companies,
         reprocess=args.reprocess
     )
