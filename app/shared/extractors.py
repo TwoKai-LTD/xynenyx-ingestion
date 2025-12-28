@@ -68,25 +68,61 @@ class MetadataExtractor:
         """Extract company names."""
         companies = set()
 
-        pattern1 = r"\b([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)\s+(?:announced|raised|launched|secured|closed|revealed)"
+        # Pattern 1: Company name before action verbs (more specific)
+        pattern1 = r"\b([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,3})\s+(?:announced|raised|launched|secured|closed|revealed|said|reported)"
         matches1 = re.findall(pattern1, content)
         companies.update(matches1)
 
-        pattern2 = r"(?:company|startup|firm)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)"
+        # Pattern 2: Company/startup/firm followed by name
+        pattern2 = r"(?:company|startup|firm|business|enterprise)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,2})"
         matches2 = re.findall(pattern2, content, re.IGNORECASE)
         companies.update(matches2)
 
-        pattern3 = r"\b([A-Z][a-z]+(?:Corp|Labs|Tech|AI|Systems|Solutions|Inc|LLC))\b"
+        # Pattern 3: Company suffixes (Inc, Corp, Labs, etc.)
+        pattern3 = r"\b([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,2}(?:Corp|Labs|Tech|AI|Systems|Solutions|Inc|LLC|LLP|Ltd|Limited))\b"
         matches3 = re.findall(pattern3, content)
         companies.update(matches3)
 
+        # Pattern 4: "X, a Y company" or "X, which..."
+        pattern4 = r"\b([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,2}),\s+(?:a|an|the)\s+"
+        matches4 = re.findall(pattern4, content)
+        companies.update(matches4)
+
+        # Extended false positives
         false_positives = {
             "The", "This", "That", "These", "Those", "Today", "Yesterday",
             "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+            "January", "February", "March", "April", "May", "June", "July", 
+            "August", "September", "October", "November", "December",
+            "New York", "San Francisco", "Los Angeles", "United States",
+            "Funding Rounds", "Funding Round", "Startup Funding", "Venture Capital",
+            "Series A", "Series B", "Series C", "Seed Round",
         }
-        companies = {c for c in companies if c not in false_positives and len(c) > 2}
+        
+        # Filter out false positives and validate
+        filtered = set()
+        for c in companies:
+            # Must be at least 3 characters
+            if len(c) < 3:
+                continue
+            # Must not be in false positives
+            if c in false_positives:
+                continue
+            # Must not be a common word (check if all words are capitalized)
+            words = c.split()
+            if len(words) > 1:
+                # Multi-word names should have at least one word > 3 chars
+                if all(len(w) <= 3 for w in words):
+                    continue
+            # Must not start with common articles/prepositions
+            if c.split()[0].lower() in ["the", "a", "an", "in", "on", "at", "for", "with"]:
+                continue
+            # Must not be a date pattern
+            if re.match(r"^\d{1,2}\s+[A-Z]", c):
+                continue
+            filtered.add(c)
 
-        return list(companies)[:15]
+        return list(filtered)[:15]
 
     def _extract_funding_amounts(self, content: str) -> List[Dict[str, Any]]:
         """Extract funding amounts with round information."""
@@ -119,6 +155,7 @@ class MetadataExtractor:
                         "amount_millions": value,
                         "currency": currency,
                         "round": round_info,
+                        "position": match.start(),  # Store position for proximity matching
                     })
 
         return amounts[:5]

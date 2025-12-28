@@ -3,6 +3,8 @@ import logging
 import time
 from typing import List, Dict, Any, Optional
 from uuid import UUID
+from datetime import datetime
+import dateparser
 from app.shared.clients import SupabaseClient
 from app.shared.extractors import MetadataExtractor, normalize_name
 from app.config import settings
@@ -127,21 +129,52 @@ class FeaturesWorker:
         # Create funding rounds
         funding_round_ids = []
         funding_amounts = extracted_metadata.get("funding_amounts", [])
+        dates = extracted_metadata.get("dates", [])
+        
         for funding_data in funding_amounts:
             try:
                 amount_millions = funding_data.get("amount_millions", 0)
                 currency = funding_data.get("currency", "USD")
                 round_type = funding_data.get("round")
+                funding_position = funding_data.get("position")
+                
+                # Convert millions to actual USD amount
+                # amount_millions is already in millions (e.g., 10 for "$10 million")
+                # So we need to multiply by 1,000,000 to get actual USD
+                amount_usd_base = amount_millions * 1_000_000
 
                 # Convert to USD (simplified - in production, use real exchange rates)
-                amount_usd = amount_millions
+                amount_usd = amount_usd_base
                 if currency == "EUR":
-                    amount_usd = amount_millions * 1.1
+                    amount_usd = amount_usd_base * 1.1
                 elif currency == "GBP":
-                    amount_usd = amount_millions * 1.25
+                    amount_usd = amount_usd_base * 1.25
 
-                # Get first company if available
-                company_id = company_ids[0] if company_ids else None
+                # Match company to funding round using proximity
+                company_id = None
+                if company_ids and funding_position is not None and companies:
+                    # Find company name closest to funding amount
+                    closest_company_idx = None
+                    min_distance = float('inf')
+                    for idx, company_name in enumerate(companies):
+                        try:
+                            # Find company position in content (case-insensitive)
+                            company_pos = raw_content.lower().find(company_name.lower())
+                            if company_pos != -1:
+                                distance = abs(company_pos - funding_position)
+                                # Prefer companies within 200 chars of funding amount
+                                if distance < min_distance and distance < 200:
+                                    min_distance = distance
+                                    closest_company_idx = idx
+                        except Exception:
+                            continue
+                    
+                    if closest_company_idx is not None and closest_company_idx < len(company_ids):
+                        company_id = company_ids[closest_company_idx]
+                
+                # Fallback to first company if no proximity match
+                if not company_id and company_ids:
+                    company_id = company_ids[0]
 
                 # Get lead investor if available
                 lead_investor_id = None
@@ -150,6 +183,51 @@ class FeaturesWorker:
                         lead_investor_id = investor_ids[0]
                         break
 
+                # Try to find a date near the funding amount
+                # Use proximity matching if position is available
+                round_date = None
+                funding_position = funding_data.get("position")
+                
+                if dates and funding_position is not None:
+                    # Find the closest date to the funding amount
+                    closest_date = None
+                    min_distance = float('inf')
+                    for date_str in dates:
+                        try:
+                            # Find date position in content (simplified - could be improved)
+                            date_pos = raw_content.find(date_str)
+                            if date_pos != -1:
+                                distance = abs(date_pos - funding_position)
+                                if distance < min_distance and distance < 500:  # Within 500 chars
+                                    min_distance = distance
+                                    closest_date = date_str
+                        except Exception:
+                            continue
+                    
+                    if closest_date:
+                        try:
+                            parsed_date = datetime.fromisoformat(closest_date.replace('Z', '+00:00'))
+                            round_date = parsed_date.date().isoformat()
+                        except Exception:
+                            pass
+                
+                # Fallback to first extracted date
+                if not round_date and dates:
+                    try:
+                        parsed_date = datetime.fromisoformat(dates[0].replace('Z', '+00:00'))
+                        round_date = parsed_date.date().isoformat()
+                    except Exception:
+                        pass
+                
+                # Fallback to article published_date from metadata
+                if not round_date and metadata.get("published_date"):
+                    try:
+                        parsed = dateparser.parse(metadata["published_date"])
+                        if parsed:
+                            round_date = parsed.date().isoformat()
+                    except Exception:
+                        pass
+
                 funding_round = self.supabase_client.create_funding_round(
                     document_id=document_id,
                     company_id=company_id,
@@ -157,7 +235,7 @@ class FeaturesWorker:
                     amount_original=amount_millions,
                     currency=currency,
                     round_type=round_type,
-                    round_date=None,  # Could extract from dates
+                    round_date=round_date,
                     lead_investor_id=lead_investor_id,
                     investor_ids=investor_ids if investor_ids else None,
                     metadata=funding_data,
