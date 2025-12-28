@@ -90,6 +90,7 @@ class DataCleanup:
         # Identify rounds that need fixing
         to_fix = []
         to_delete = []
+        to_flag = []  # Suspiciously high amounts
         
         for fr in funding_rounds:
             amount_usd = fr.get("amount_usd")
@@ -130,9 +131,20 @@ class DataCleanup:
                     })
             # Rounds between $10K and $1M might be correct or might be wrong
             # We'll leave these alone for now
+            
+            # Flag suspiciously high amounts (>$10B) - likely misparsed
+            if amount_usd > 10_000_000_000:
+                to_flag.append({
+                    "id": fr["id"],
+                    "amount": amount_usd,
+                    "amount_original": fr.get("amount_original"),
+                    "company_name": fr.get("company_id"),  # Will look up later
+                    "reason": "Suspiciously high amount (>$10B)"
+                })
         
         logger.info(f"Found {len(to_fix)} funding rounds to fix")
         logger.info(f"Found {len(to_delete)} funding rounds to delete")
+        logger.info(f"Found {len(to_flag)} funding rounds with suspiciously high amounts")
         
         if dry_run:
             logger.info("\n=== DRY RUN - Would fix the following ===")
@@ -146,6 +158,12 @@ class DataCleanup:
                 logger.info(f"  ID: {delete['id']}, Amount: {delete['amount']} ({delete['reason']})")
             if len(to_delete) > 10:
                 logger.info(f"  ... and {len(to_delete) - 10} more")
+            
+            logger.info("\n=== DRY RUN - Suspiciously high amounts (review needed) ===")
+            for flag in to_flag[:10]:  # Show first 10
+                logger.info(f"  ID: {flag['id']}, Amount: ${flag['amount']:,.0f}, Original: {flag['amount_original']} ({flag['reason']})")
+            if len(to_flag) > 10:
+                logger.info(f"  ... and {len(to_flag) - 10} more")
         else:
             # Fix amounts
             for fix in to_fix:
@@ -167,6 +185,11 @@ class DataCleanup:
             
             logger.info(f"Fixed {len(to_fix)} funding rounds")
             logger.info(f"Deleted {len(to_delete)} funding rounds")
+            if to_flag:
+                logger.warning(f"Found {len(to_flag)} funding rounds with suspiciously high amounts (>$10B) - review recommended")
+                # Optionally delete or flag these - for now just log
+                for flag in to_flag:
+                    logger.warning(f"  Suspicious: ID {flag['id']}, Amount: ${flag['amount']:,.0f}")
     
     async def _fix_round_dates(self, dry_run: bool):
         """Fix missing round_date by extracting from document metadata."""
@@ -273,7 +296,7 @@ class DataCleanup:
         
         logger.info(f"Found {len(companies)} companies")
         
-        # Bad company name patterns
+        # Bad company name patterns (expanded)
         bad_patterns = [
             "was caught in",
             "funding rounds fell",
@@ -283,6 +306,36 @@ class DataCleanup:
             "funding rounds",
             "startup funding",
             "venture capital",
+            "continues to diversify",
+            "like Netflix",
+            "said Friday that",
+            "must build",
+            "to become",
+            "raised",
+            "secured",
+            "last December",
+            "stories",
+            "activity",
+            "conceded that",
+            "could lose the",
+            "has faced its",
+            "acceleration programs across",
+            "is defensible when",
+            "companies likely testing",
+            "companies to try",
+            "comes waltzing into",
+            "is also rumored",
+            "afloat and his",
+            "that uses AI",
+            "that monitors hacking",
+            "could corroborate the",
+            "wrote in its",
+            "customers who use",
+            "that makes money",
+            "and technology of",
+            "said in",
+            "will be searching",
+            "reporter at techcrunch",
         ]
         
         # Also check for very short names or names that are common words
@@ -310,13 +363,20 @@ class DataCleanup:
                 continue
             
             # Check for names that are just common words
-            common_words = ["the", "this", "that", "these", "those", "today", "yesterday"]
+            common_words = [
+                "the", "this", "that", "these", "those", "today", "yesterday",
+                "delaware", "stock", "ipo", "mtv", "ngl", "ftc", "cisco", "talos",
+                "battlefield", "insider", "paramount", "netflix", "openai", "elevenlabs",
+            ]
             if name in common_words:
-                to_delete.append({
-                    "id": company["id"],
-                    "name": company["name"],
-                    "reason": "Common word"
-                })
+                # Only delete if they have no funding rounds or very few
+                funding_count = len([fr for fr in funding_rounds if fr.get("company_id") == company["id"]])
+                if funding_count == 0:
+                    to_delete.append({
+                        "id": company["id"],
+                        "name": company["name"],
+                        "reason": "Common word with no funding rounds"
+                    })
         
         logger.info(f"Found {len(to_delete)} bad companies to delete")
         

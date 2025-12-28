@@ -104,6 +104,23 @@ class SupabaseClient:
             .execute()
         )
         return result.data if result.data else []
+    
+    def list_all_documents_ready_for_features(self) -> List[dict]:
+        """List ALL documents ready for feature extraction (no limit)."""
+        all_docs = []
+        offset = 0
+        batch_size = 100
+        
+        while True:
+            batch = self.list_documents_ready_for_features(limit=batch_size, offset=offset)
+            if not batch:
+                break
+            all_docs.extend(batch)
+            if len(batch) < batch_size:
+                break
+            offset += batch_size
+        
+        return all_docs
 
     def insert_chunks(self, chunks: List[dict]) -> None:
         """Insert document chunks in batch."""
