@@ -135,13 +135,29 @@ class MetadataExtractor:
         return list(filtered)[:15]
 
     def _extract_funding_amounts(self, content: str) -> List[Dict[str, Any]]:
-        """Extract funding amounts with round information."""
+        """Extract funding amounts with round information, excluding valuations."""
         amounts = []
         seen = set()
 
         for pattern in self.funding_patterns:
             matches = re.finditer(pattern, content, re.IGNORECASE)
             for match in matches:
+                # Check context around the match to exclude valuations
+                start_pos = max(0, match.start() - 50)
+                end_pos = min(len(content), match.end() + 50)
+                context = content[start_pos:end_pos].lower()
+                
+                # Skip if this looks like a valuation, not funding
+                valuation_indicators = [
+                    "valuation", "valued at", "worth", "at a", "at an",
+                    "market cap", "market capitalization", "enterprise value"
+                ]
+                if any(indicator in context for indicator in valuation_indicators):
+                    # Check if it's explicitly funding (not valuation)
+                    funding_indicators = ["raised", "funding", "secured", "closed", "invested"]
+                    if not any(indicator in context for indicator in funding_indicators):
+                        continue  # Skip this - it's a valuation, not funding
+                
                 value = float(match.group(1))
                 unit_text = match.group(0).lower()
 
@@ -149,6 +165,13 @@ class MetadataExtractor:
                     value = value * 1000
                 elif "k" in unit_text or "K" in unit_text:
                     value = value / 1000
+
+                # Sanity check: reject extremely high amounts (>$50B) that are likely valuations
+                # Largest funding rounds in history are typically $10-20B
+                if value > 50_000:  # >$50B in millions
+                    # Only accept if explicitly mentioned as funding (not valuation)
+                    if not any(indicator in context for indicator in ["raised", "funding", "secured", "closed"]):
+                        continue  # Skip - likely a valuation
 
                 currency = "USD"
                 if "€" in match.group(0):

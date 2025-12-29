@@ -132,22 +132,23 @@ class DataCleanup:
             # Rounds between $10K and $1M might be correct or might be wrong
             # We'll leave these alone for now
             
-            # Delete amounts >$100B - almost certainly wrong (confusing valuation with funding, or parsing errors)
-            # Largest funding rounds in history are typically $10-20B, not hundreds of billions
-            if amount_usd > 100_000_000_000:  # >$100B
+            # Delete amounts >$50B - almost certainly wrong (confusing valuation with funding, or parsing errors)
+            # Largest funding rounds in history are typically $10-20B
+            # We've updated extraction logic to prevent these going forward
+            if amount_usd > 50_000_000_000:  # >$50B
                 to_delete.append({
                     "id": fr["id"],
                     "amount": amount_usd,
-                    "reason": f"Amount >$100B (${amount_usd/1_000_000_000:.1f}B) - likely extraction error (valuation vs funding)"
+                    "reason": f"Amount >$50B (${amount_usd/1_000_000_000:.1f}B) - likely extraction error (valuation vs funding)"
                 })
-            # Flag suspiciously high amounts (>$10B but <=$100B) - review needed
+            # Flag suspiciously high amounts (>$10B but <=$50B) - review needed
             elif amount_usd > 10_000_000_000:
                 to_flag.append({
                     "id": fr["id"],
                     "amount": amount_usd,
                     "amount_original": fr.get("amount_original"),
                     "company_name": fr.get("company_id"),  # Will look up later
-                    "reason": "Suspiciously high amount (>$10B, <=$100B) - review recommended"
+                    "reason": "Suspiciously high amount (>$10B, <=$50B) - review recommended"
                 })
         
         logger.info(f"Found {len(to_fix)} funding rounds to fix")

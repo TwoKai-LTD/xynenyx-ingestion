@@ -1,4 +1,5 @@
 """Features worker - extract and store structured features."""
+
 import logging
 import time
 from typing import List, Dict, Any, Optional
@@ -32,8 +33,13 @@ class FeaturesWorker:
         logger.info("Starting features worker...")
 
         # Get documents ready for feature extraction
-        documents = self.supabase_client.list_documents_ready_for_features(limit=self.batch_size)
-        logger.info(f"Found {len(documents)} documents for feature extraction")
+        # Process in batches to avoid memory issues
+        documents = self.supabase_client.list_documents_ready_for_features(
+            limit=self.batch_size
+        )
+        logger.info(
+            f"Found {len(documents)} documents for feature extraction (batch size: {self.batch_size})"
+        )
 
         if not documents:
             logger.info("No documents for feature extraction")
@@ -62,7 +68,10 @@ class FeaturesWorker:
                 funding_rounds_created += result.get("funding_rounds_created", 0)
             except Exception as e:
                 errors += 1
-                logger.error(f"Error extracting features for document {doc['id']}: {e}", exc_info=True)
+                logger.error(
+                    f"Error extracting features for document {doc['id']}: {e}",
+                    exc_info=True,
+                )
 
         duration = time.time() - start_time
         logger.info(
@@ -120,24 +129,28 @@ class FeaturesWorker:
             seen_investors.add(investor_name)
             try:
                 normalized = normalize_name(investor_name)
-                investor = self.supabase_client.create_investor(investor_name, normalized)
+                investor = self.supabase_client.create_investor(
+                    investor_name, normalized
+                )
                 if investor and investor.get("id"):
                     investor_ids.append(UUID(investor["id"]))
             except Exception as e:
-                logger.warning(f"Error creating investor {investor_name}: {e}", exc_info=True)
+                logger.warning(
+                    f"Error creating investor {investor_name}: {e}", exc_info=True
+                )
 
         # Create funding rounds
         funding_round_ids = []
         funding_amounts = extracted_metadata.get("funding_amounts", [])
         dates = extracted_metadata.get("dates", [])
-        
+
         for funding_data in funding_amounts:
             try:
                 amount_millions = funding_data.get("amount_millions", 0)
                 currency = funding_data.get("currency", "USD")
                 round_type = funding_data.get("round")
                 funding_position = funding_data.get("position")
-                
+
                 # Convert millions to actual USD amount
                 # amount_millions is already in millions (e.g., 10 for "$10 million")
                 # So we need to multiply by 1,000,000 to get actual USD
@@ -150,12 +163,22 @@ class FeaturesWorker:
                 elif currency == "GBP":
                     amount_usd = amount_usd_base * 1.25
 
+                # Validation: reject extremely high amounts (>$50B) that are likely extraction errors
+                # Largest funding rounds in history are typically $10-20B
+                # Amounts >$50B are almost certainly valuations, not funding amounts
+                if amount_usd > 50_000_000_000:  # >$50B
+                    logger.warning(
+                        f"Skipping funding round with amount ${amount_usd/1_000_000_000:.1f}B "
+                        f"(likely a valuation, not funding) for document {document_id}"
+                    )
+                    continue  # Skip this funding round
+
                 # Match company to funding round using proximity
                 company_id = None
                 if company_ids and funding_position is not None and companies:
                     # Find company name closest to funding amount
                     closest_company_idx = None
-                    min_distance = float('inf')
+                    min_distance = float("inf")
                     for idx, company_name in enumerate(companies):
                         try:
                             # Find company position in content (case-insensitive)
@@ -168,10 +191,12 @@ class FeaturesWorker:
                                     closest_company_idx = idx
                         except Exception:
                             continue
-                    
-                    if closest_company_idx is not None and closest_company_idx < len(company_ids):
+
+                    if closest_company_idx is not None and closest_company_idx < len(
+                        company_ids
+                    ):
                         company_id = company_ids[closest_company_idx]
-                
+
                 # Fallback to first company if no proximity match
                 if not company_id and company_ids:
                     company_id = company_ids[0]
@@ -187,38 +212,44 @@ class FeaturesWorker:
                 # Use proximity matching if position is available
                 round_date = None
                 funding_position = funding_data.get("position")
-                
+
                 if dates and funding_position is not None:
                     # Find the closest date to the funding amount
                     closest_date = None
-                    min_distance = float('inf')
+                    min_distance = float("inf")
                     for date_str in dates:
                         try:
                             # Find date position in content (simplified - could be improved)
                             date_pos = raw_content.find(date_str)
                             if date_pos != -1:
                                 distance = abs(date_pos - funding_position)
-                                if distance < min_distance and distance < 500:  # Within 500 chars
+                                if (
+                                    distance < min_distance and distance < 500
+                                ):  # Within 500 chars
                                     min_distance = distance
                                     closest_date = date_str
                         except Exception:
                             continue
-                    
+
                     if closest_date:
                         try:
-                            parsed_date = datetime.fromisoformat(closest_date.replace('Z', '+00:00'))
+                            parsed_date = datetime.fromisoformat(
+                                closest_date.replace("Z", "+00:00")
+                            )
                             round_date = parsed_date.date().isoformat()
                         except Exception:
                             pass
-                
+
                 # Fallback to first extracted date
                 if not round_date and dates:
                     try:
-                        parsed_date = datetime.fromisoformat(dates[0].replace('Z', '+00:00'))
+                        parsed_date = datetime.fromisoformat(
+                            dates[0].replace("Z", "+00:00")
+                        )
                         round_date = parsed_date.date().isoformat()
                     except Exception:
                         pass
-                
+
                 # Fallback to article published_date from metadata
                 if not round_date and metadata.get("published_date"):
                     try:
@@ -276,4 +307,3 @@ class FeaturesWorker:
             "investors_created": len(set(investor_ids)),
             "funding_rounds_created": len(funding_round_ids),
         }
-
