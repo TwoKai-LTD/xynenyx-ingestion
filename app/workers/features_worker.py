@@ -151,6 +151,15 @@ class FeaturesWorker:
                 round_type = funding_data.get("round")
                 funding_position = funding_data.get("position")
 
+                # Safety check: amount_millions should be reasonable (typically < 50,000 for <$50B)
+                # If it's extremely high, it's likely an extraction error
+                if amount_millions > 50_000:  # >$50B in millions
+                    logger.warning(
+                        f"Skipping funding round with suspicious amount_millions: {amount_millions}M "
+                        f"(likely extraction error) for document {document_id}"
+                    )
+                    continue  # Skip this funding round
+
                 # Convert millions to actual USD amount
                 # amount_millions is already in millions (e.g., 10 for "$10 million")
                 # So we need to multiply by 1,000,000 to get actual USD
